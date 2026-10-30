@@ -1,0 +1,6 @@
+/src/
+/pkg/
+*.zip
+*.tgz
+*.pkg.tar*
+*.log

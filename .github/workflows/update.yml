@@ -1,0 +1,69 @@
+name: Check for upstream release
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream tag to package (default: latest stable release)'
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: upstream-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      BRANCH: bot/upstream-update
+    steps:
+      - name: Install tools
+        run: pacman -Syu --noconfirm --needed git jq pacman-contrib github-cli
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Bump PKGBUILD
+        id: bump
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          useradd -m builder
+          chown -R builder: "$GITHUB_WORKSPACE"
+          out="$(mktemp)"; body="$RUNNER_TEMP/pr-body.md"
+          touch "$body"; chmod 666 "$out" "$body"
+          args=()
+          [ -z "$TAG" ] || args=(--tag "$TAG")
+          runuser -u builder -- env GITHUB_TOKEN="$GITHUB_TOKEN" GITHUB_OUTPUT="$out" \
+            PR_BODY_FILE="$body" HOME=/home/builder \
+            scripts/update.sh "${args[@]}"
+          cat "$out" >> "$GITHUB_OUTPUT"
+          echo "body=$body" >> "$GITHUB_OUTPUT"
+          git status --short
+
+      - name: Open or update pull request
+        id: pr
+        if: steps.bump.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: ${{ env.BRANCH }}
+          delete-branch: true
+          commit-message: Update to ${{ steps.bump.outputs.tag }}
+          title: Update to ${{ steps.bump.outputs.tag }}
+          body-path: ${{ steps.bump.outputs.body }}
+          labels: upstream-update
+
+      - name: Run CI on the pull request
+        if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"

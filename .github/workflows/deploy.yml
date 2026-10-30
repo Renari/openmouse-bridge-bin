@@ -1,0 +1,48 @@
+name: Deploy to AUR
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - PKGBUILD
+      - .SRCINFO
+      - '*.install'
+      - '*.desktop'
+      - '*.rules'
+      - '*.conf'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aur-deploy
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish to AUR
+    needs: ci
+    runs-on: ubuntu-latest
+    container: archlinux:base
+    environment:
+      name: aur
+      url: https://aur.archlinux.org/packages/openmouse-bridge-bin
+    steps:
+      - name: Install tools
+        run: pacman -Syu --noconfirm --needed git openssh
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Push to aur.archlinux.org
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          # Optional repository variables; default to the merge commit's author.
+          AUR_COMMIT_NAME: ${{ vars.AUR_COMMIT_NAME }}
+          AUR_COMMIT_EMAIL: ${{ vars.AUR_COMMIT_EMAIL }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          scripts/publish-aur.sh
