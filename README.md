@@ -10,11 +10,11 @@ built from upstream's prebuilt `linux-x64` release.
    drafts are skipped). If that release is newer than the PKGBUILD, `scripts/update.sh`:
    - downloads the release archive and requires its SHA-256 to match both upstream's
      `.sha256` file and the digest GitHub recorded for the asset;
-   - prefers `openmouse-bridge-linux-x64-full.zip` (since 1.0.0-beta.21; the plain
-     `linux-x64.zip` is then just a stub for old self-updaters);
+   - packages `openmouse-bridge-linux-x64-full.zip` (the plain `linux-x64.zip` is
+     only a stub for old self-updaters);
    - verifies the bundled node-hid against npm (see below);
-   - regenerates the udev rule from that tag's `install-linux.sh` vendor list;
-   - bumps `_tag`, `_asset`, `_nodehid`, `pkgver`, resets `pkgrel=1`, updates the sums and
+   - regenerates the udev rule and its helper from that tag's `install-linux.sh`;
+   - bumps `_tag`, `_nodehid`, `pkgver`, resets `pkgrel=1`, updates the sums and
      `.SRCINFO`.
 
    It then opens (or refreshes) a single PR from `bot/upstream-update`, with the
@@ -22,16 +22,16 @@ built from upstream's prebuilt `linux-x64` release.
 2. **Test.** `CI` (`.github/workflows/ci.yml`) runs on every PR:
    - **Lint and verify sources:** shellcheck, actionlint, namcap on the PKGBUILD,
      a check that `.SRCINFO` is up to date, and a re-check of every checksum, the udev
-     vendor list and node-hid against upstream and npm (`scripts/verify-upstream.sh`).
+     rule and helper, and node-hid against upstream and npm (`scripts/verify-upstream.sh`).
    - **Build package:** `makepkg` as an unprivileged user in a clean
      `archlinux:base-devel` container, then namcap on the built package.
    - **Install and run package:** a fresh container installs the package and runs
      `scripts/test-package.sh`. It runs `pacman -Qkk`, checks file layout and
      permissions, and confirms `ldd` and the `dlopen` libraries resolve. It checks
      the bundled Node.js and loads both node-hid backends, then runs upstream's
-     helper unit tests. It validates the desktop entry and udev rule. It starts
-     Bridge headless and with its tray (Xvfb + D-Bus), and queries its local API
-     on `127.0.0.1:17846`. Finally it uninstalls the package and checks nothing
+     helper unit tests. It validates the desktop entry, udev rule and helper. It
+     starts Bridge headless and with its panel (Xvfb + D-Bus, rendered by Mesa's
+     llvmpipe), and queries its local API on `127.0.0.1:17846`. Finally it uninstalls the package and checks nothing
      is left behind.
 3. **Publish.** Merging to `master` runs `Deploy to AUR` (`.github/workflows/deploy.yml`).
    It re-runs the full CI on the merged commit, then `scripts/publish-aur.sh`
@@ -48,13 +48,16 @@ To package a specific tag, run the update workflow manually and enter it in the
 ## Packaging notes
 
 - Installs to `/usr/lib/openmouse-bridge`, with `/usr/bin/openmouse-bridge` as a symlink.
-- **In-app updater:** Bridge's self-updater cannot write to pacman-managed files, but
-  it would still download each new upstream release before failing. `prepare()`
-  rewrites the release URL compiled into the binary (same length, padded with
-  spaces) to `_updateurl`, the API URL of the packaged tag, so Bridge always
-  reports "Up to date"; users update by rebuilding the package from the AUR.
-  The build fails if upstream changes that URL; CI checks `_repoid` and that
-  `_updateurl` returns the packaged release.
+- **In-app updater:** since 1.0.0 Bridge only installs updates itself when it runs
+  as an AppImage (`$APPIMAGE` set). This package is not one, so Bridge checks
+  upstream's `latest.json` and, when a newer release exists, only shows it with a
+  link to the release page; it downloads and replaces nothing. Users update by
+  upgrading the AUR package.
+- **Panel rendering and fonts:** the panel draws through wgpu: Vulkan when
+  `vulkan-icd-loader` and a Vulkan driver are present, otherwise OpenGL through
+  libEGL. Its text needs one of Noto Sans, DejaVu Sans, Cantarell, Adwaita Sans,
+  Ubuntu, Helvetica, Segoe UI or Arial, or the panel panics on start; the package
+  depends on `noto-fonts` so one is always there.
 - **node-hid hidraw prebuild:** upstream's release workflow deletes node-hid's
   `HID_hidraw-linux-x64` prebuild. node-hid loads that backend by default on
   Linux, so without it the Node HID helper fails (`Failed to find binding for
@@ -63,8 +66,15 @@ To package a specific tag, run the update workflow manually and enter it in the
   libusb prebuild upstream *did* ship is byte-identical to the tarball's. If
   upstream starts shipping the hidraw prebuild again, `package()` leaves theirs
   in place.
-- **udev rule:** `/usr/lib/udev/rules.d/69-openmouse-bridge.rules` grants hidraw
-  access to the logged-in seat user (`uaccess`). Upstream's installer adds
-  `MODE="0666"`, which makes these devices, keyboards included, readable by every
-  local user and service; this package leaves that out. `uinput` is loaded at boot
-  via `/usr/lib/modules-load.d/openmouse-bridge.conf`.
+- **udev rule:** `/usr/lib/udev/rules.d/69-openmouse-bridge.rules` grants the
+  logged-in seat user (`uaccess`) access to every hidraw node of a USB device with
+  a mouse interface (a mouse, or the receiver it pairs with; keyboards and tablets
+  that also expose a mouse interface match too). The rule runs
+  `/usr/lib/udev/openmouse-bridge-is-mouse`, upstream's helper that reads the USB
+  interfaces and report descriptors. Both come from the heredocs in upstream's
+  `install-linux.sh` (`scripts/gen-udev-rules.sh`), moved from `/etc/udev` to
+  `/usr/lib/udev`. Upstream falls back to `MODE="0666"` on systems without logind;
+  this package always uses `uaccess`. Bridge's own "Fix permissions" button only
+  appears when a mouse cannot be opened, and would write
+  `/etc/udev/rules.d/69-openmouse-bridge.rules`, which overrides this package's
+  rule. `uinput` is loaded at boot via `/usr/lib/modules-load.d/openmouse-bridge.conf`.

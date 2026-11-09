@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Bumps the package to the latest stable upstream release (or --tag TAG).
 #
-# Updates PKGBUILD (_tag, _asset, pkgver, pkgrel, sha256sums), regenerates the
-# udev rule from that release's install-linux.sh, and rewrites .SRCINFO.
+# Updates PKGBUILD (_tag, _nodehid, pkgver, pkgrel, sha256sums), regenerates the
+# udev rule and its helper from that release's install-linux.sh, and rewrites
+# .SRCINFO.
 # The release archive's checksum must agree with both upstream's published
 # .sha256 file and the digest GitHub recorded for the asset.
 #
@@ -13,10 +14,9 @@ set -euo pipefail
 
 REPO="OpenMouse-Project/OpenMouse-Bridge"
 API="https://api.github.com/repos/${REPO}"
-FULL_ASSET="openmouse-bridge-linux-x64-full.zip"
-# Releases before 1.0.0-beta.21 shipped the full package under this name;
-# later releases keep it only as a small stub for old self-updaters.
-LEGACY_ASSET="openmouse-bridge-linux-x64.zip"
+# The full package; the unsuffixed linux-x64.zip is only a small stub for old
+# self-updaters. Matches _asset in the PKGBUILD.
+ASSET="openmouse-bridge-linux-x64-full.zip"
 
 cd "$(dirname "$0")/.."
 
@@ -69,17 +69,14 @@ if [ "$force" != true ] && [ "$(vercmp "$new_pkgver" "$current_pkgver")" -le 0 ]
   exit 0
 fi
 
-asset="$FULL_ASSET"
+asset="$ASSET"
+[ "$(bash -c 'source ./PKGBUILD && printf %s "$_asset"')" = "$asset" ] ||
+  die "PKGBUILD _asset is not $asset"
 asset_json="$(jq -c --arg n "$asset" '.assets[] | select(.name == $n)' <<<"$release")"
-if [ -z "$asset_json" ]; then
-  asset="$LEGACY_ASSET"
-  asset_json="$(jq -c --arg n "$asset" '.assets[] | select(.name == $n)' <<<"$release")"
-fi
-[ -n "$asset_json" ] || die "$tag has neither $FULL_ASSET nor $LEGACY_ASSET"
+[ -n "$asset_json" ] || die "$tag has no $asset"
 asset_url="$(jq -r '.browser_download_url' <<<"$asset_json")"
 github_digest="$(jq -r '.digest // empty' <<<"$asset_json")"
 github_digest="${github_digest#sha256:}"
-log "using asset ${asset}"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -103,11 +100,10 @@ nodehid="$(scripts/verify-node-hid.sh "$zip" "$work")"
 
 curl -fsSL --retry 3 "https://raw.githubusercontent.com/${REPO}/${tag}/install-linux.sh" \
   -o "$work/install-linux.sh"
-scripts/gen-udev-rules.sh "$work/install-linux.sh" >69-openmouse-bridge.rules
+scripts/gen-udev-rules.sh "$work/install-linux.sh" .
 
 sed -i \
   -e "s|^_tag=.*|_tag=${tag}|" \
-  -e "s|^_asset=.*|_asset=${asset}|" \
   -e "s|^_nodehid=.*|_nodehid=${nodehid}|" \
   -e "s|^pkgver=.*|pkgver=${new_pkgver}|" \
   -e "s|^pkgrel=.*|pkgrel=1|" \
@@ -150,11 +146,11 @@ if [ -n "${PR_BODY_FILE:-}" ]; then
     echo "**Before merging**, check the upstream diff for new runtime dependencies,"
     echo "license changes or anything unexpected. Merging publishes to the AUR."
     echo
-    if ! git diff --quiet -- 69-openmouse-bridge.rules; then
-      echo "### udev vendor list changed"
+    if ! git diff --quiet -- 69-openmouse-bridge.rules openmouse-bridge-is-mouse; then
+      echo "### udev rule or helper changed"
       echo
       echo '```diff'
-      git diff -U0 -- 69-openmouse-bridge.rules | grep -E '^[+-]SUBSYSTEM' || true
+      git diff -- 69-openmouse-bridge.rules openmouse-bridge-is-mouse
       echo '```'
       echo
     fi

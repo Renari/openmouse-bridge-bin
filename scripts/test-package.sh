@@ -45,6 +45,7 @@ for path in \
   /usr/share/applications/io.openmouse.bridge.desktop \
   /usr/share/icons/hicolor/512x512/apps/io.openmouse.bridge.png \
   /usr/lib/udev/rules.d/69-openmouse-bridge.rules \
+  /usr/lib/udev/openmouse-bridge-is-mouse \
   /usr/lib/modules-load.d/openmouse-bridge.conf \
   /usr/share/doc/$pkgname/README.md \
   /usr/share/licenses/$pkgname/DM-Sans-OFL.txt; do
@@ -58,10 +59,6 @@ check "everything under $app is root-owned" \
   test -z "$(find "$app" ! -user root -print -quit)"
 check "nothing under $app is world-writable" \
   test -z "$(find "$app" -perm -o+w ! -type l -print -quit)"
-check "update check no longer points at upstream's latest release" \
-  bash -c "! LC_ALL=C grep -qaF 'OpenMouse-Bridge/releases/latest' '$app/openmouse-bridge'"
-check "update check points at the packaged release" \
-  bash -c "LC_ALL=C grep -qaE 'https://api\.github\.com/repositories/[0-9]+/releases/tags/v[^ ]+ *' '$app/openmouse-bridge'"
 endsection
 
 section "Shared libraries"
@@ -72,8 +69,9 @@ for elf in \
   missing="$(ldd "$elf" | awk '/not found/ { print $1 }')"
   check "ldd resolves every library of ${elf#"$app"/}${missing:+ (missing: $missing)}" test -z "$missing"
 done
-# Loaded with dlopen at runtime, so ldd cannot see them.
-for lib in libayatana-appindicator3.so.1 libGL.so.1 libEGL.so.1 libwayland-client.so.0 libxkbcommon.so.0 libxkbcommon-x11.so.0; do
+# Loaded with dlopen at runtime by wgpu and the Wayland backend, so ldd cannot
+# see them. libvulkan is optional: wgpu falls back to OpenGL through libEGL.
+for lib in libEGL.so.1 libwayland-client.so.0 libwayland-egl.so.1; do
   check "runtime dlopen target present: $lib" bash -c "ldconfig -p | grep -q '$lib'"
 done
 endsection
@@ -134,8 +132,12 @@ check "desktop entry Exec is on PATH" \
 check "udev rule validates" udevadm verify --resolve-names=never /usr/lib/udev/rules.d/69-openmouse-bridge.rules
 check "udev rule never grants world access" \
   bash -c "! grep -E 'MODE=\"0?[0-7][0-7][1-7]\"' /usr/lib/udev/rules.d/69-openmouse-bridge.rules"
-check "udev rule covers at least one hidraw vendor" \
-  grep -q 'SUBSYSTEM=="hidraw", ATTRS{idVendor}==' /usr/lib/udev/rules.d/69-openmouse-bridge.rules
+check "udev rule runs the packaged mouse helper for hidraw" \
+  grep -qF 'SUBSYSTEM=="hidraw", SUBSYSTEMS=="usb", PROGRAM="/bin/sh /usr/lib/udev/openmouse-bridge-is-mouse %S%p", TAG+="uaccess"' \
+  /usr/lib/udev/rules.d/69-openmouse-bridge.rules
+check "udev mouse helper parses" sh -n /usr/lib/udev/openmouse-bridge-is-mouse
+check "udev mouse helper rejects a path that is no hidraw device" \
+  bash -c "! sh /usr/lib/udev/openmouse-bridge-is-mouse /nonexistent"
 check "uinput is loaded at boot" grep -qx uinput /usr/lib/modules-load.d/openmouse-bridge.conf
 endsection
 
@@ -187,6 +189,7 @@ pacman -R --noconfirm "$pkgname"
 check "$app removed" test ! -e "$app"
 check "/usr/bin/openmouse-bridge removed" test ! -e /usr/bin/openmouse-bridge
 check "udev rule removed" test ! -e /usr/lib/udev/rules.d/69-openmouse-bridge.rules
+check "udev mouse helper removed" test ! -e /usr/lib/udev/openmouse-bridge-is-mouse
 endsection
 
 if [ "$failures" -gt 0 ]; then
